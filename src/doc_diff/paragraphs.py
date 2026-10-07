@@ -2,13 +2,11 @@ import re
 from collections.abc import Sequence
 from functools import reduce
 
+from doc_diff.clauses import CLAUSE_START_PATTERN
+
 SOFT_HYPHEN = "\N{SOFT HYPHEN}"
 HYPHEN = "-"
 
-# Номер пункта: «1. », «2.3. », «2.3 », «10.1.2 ». Составляющие — числа от 1 до 2 цифр без
-# ведущего нуля, поэтому даты («01.02.2024 », «12.11.2024 ») и суммы («10 000») абзац не открывают.
-# Записано без вложенных повторов, которые дают катастрофический перебор.
-_CLAUSE_START_PATTERN = re.compile(r"[1-9]\d?\.(?:[1-9]\d?\.)*(?:[1-9]\d?)?\s")
 _HYPHENATED_LETTER_PATTERN = re.compile(r"[^\W\d_]-")
 
 
@@ -46,7 +44,7 @@ def split_into_blocks(lines: Sequence[str]) -> list[list[str]]:
 
 
 def starts_clause(line: str) -> bool:
-    return _CLAUSE_START_PATTERN.match(line) is not None
+    return CLAUSE_START_PATTERN.match(line) is not None
 
 
 def join_lines(previous: str, following: str) -> str:

@@ -78,15 +78,45 @@ def test_prints_comparison_of_versions(tmp_path: Path, capsys: pytest.CaptureFix
     assert exit_code == EXIT_OK
     assert captured.err == ""
     assert captured.out == (
-        "Изменено: 1, добавлено: 1, удалено: 1, без изменений: 3.\n\n"
+        "Изменено: 1, только форматирование: 0, добавлено: 1, удалено: 1, без изменений: 3.\n\n"
         "Без изменений: Договор аренды № 7\n\n"
         "Без изменений, пункт 1.1: Арендатор вносит плату ежемесячно.\n\n"
         "Изменён, пункт 1.2:\n"
         "  Было: Срок аренды составляет один год.\n"
-        "  Стало: Срок аренды составляет два года.\n\n"
+        "  Стало: Срок аренды составляет два года.\n"
+        "  По существу:\n"
+        "    один год \N{RIGHTWARDS ARROW} два года\n\n"
         "Удалён, пункт 1.3: Арендатор страхует помещение.\n\n"
         "Без изменений, пункт 2.1 \N{RIGHTWARDS ARROW} 1.3: Споры решаются в суде.\n\n"
         "Добавлен, пункт 1.4: Арендатор не вправе сдавать помещение в субаренду.\n"
+    )
+
+
+def test_prints_formatting_changes_separately_from_content_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old_path = tmp_path / "old.docx"
+    new_path = tmp_path / "new.docx"
+    build_docx(old_path, ["1.1. Залог 10 000", "1.2. Арендатор вносит плату ежемесячно."])
+    build_docx(new_path, ["1.1. Залог 10000", "1.2. АРЕНДАТОР вносит плату ежеквартально."])
+
+    exit_code = main([str(old_path), str(new_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_OK
+    assert captured.err == ""
+    assert captured.out == (
+        "Изменено: 1, только форматирование: 1, добавлено: 0, удалено: 0, без изменений: 0.\n\n"
+        "Изменено только форматирование, пункт 1.1:\n"
+        "  Было: Залог 10 000\n"
+        "  Стало: Залог 10000\n"
+        "  Форматирование: пробелы.\n\n"
+        "Изменён, пункт 1.2:\n"
+        "  Было: Арендатор вносит плату ежемесячно.\n"
+        "  Стало: АРЕНДАТОР вносит плату ежеквартально.\n"
+        "  По существу:\n"
+        "    ежемесячно \N{RIGHTWARDS ARROW} ежеквартально\n"
+        "  Форматирование: регистр.\n"
     )
 
 
@@ -101,7 +131,9 @@ def test_identical_versions_have_no_differences(
     captured = capsys.readouterr()
     assert exit_code == EXIT_OK
     assert captured.err == ""
-    assert captured.out.startswith("Изменено: 0, добавлено: 0, удалено: 0, без изменений: 2.\n")
+    assert captured.out.startswith(
+        "Изменено: 0, только форматирование: 0, добавлено: 0, удалено: 0, без изменений: 2.\n"
+    )
 
 
 def test_missing_first_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

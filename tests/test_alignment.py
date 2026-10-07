@@ -1,18 +1,22 @@
 import time
 
 from doc_diff.alignment import (
+    SIMILARITY_THRESHOLD,
     AddedClause,
     AlignedClause,
     AlignmentSummary,
     ChangedClause,
+    ReformattedClause,
     RemovedClause,
     UnchangedClause,
     align_clauses,
     clause_words,
+    compare_clauses,
     summarize_alignment,
     word_similarity,
 )
 from doc_diff.clauses import Clause, parse_clause
+from doc_diff.word_diff import diff_words
 
 LARGE_VERSION_SIZE = 500
 # Порог из требования к скорости; запас над реальным временем велик, чтобы тест не был хрупким.
@@ -25,6 +29,14 @@ def clause(text: str, number: str | None = None) -> Clause:
 
 def clauses(*texts: str) -> list[Clause]:
     return [clause(text) for text in texts]
+
+
+def changed(old: Clause, new: Clause) -> ChangedClause:
+    return ChangedClause(old=old, new=new, word_diff=diff_words(old.text, new.text))
+
+
+def reformatted(old: Clause, new: Clause) -> ReformattedClause:
+    return ReformattedClause(old=old, new=new, word_diff=diff_words(old.text, new.text))
 
 
 def test_identical_versions_are_only_unchanged() -> None:
@@ -95,21 +107,23 @@ def test_repeated_clause_removed_once_leaves_one_removed() -> None:
 
 
 def test_empty_alignment_summary_is_zero() -> None:
-    assert summarize_alignment([]) == AlignmentSummary(changed=0, added=0, removed=0, unchanged=0)
+    assert summarize_alignment([]) == AlignmentSummary(
+        changed=0, reformatted=0, added=0, removed=0, unchanged=0
+    )
 
 
 def test_similar_clause_is_changed() -> None:
     old = clause("Арендатор вносит плату ежемесячно.")
     new = clause("Арендатор вносит плату ежеквартально.")
 
-    assert align_clauses([old], [new]) == [ChangedClause(old=old, new=new)]
+    assert align_clauses([old], [new]) == [changed(old, new)]
 
 
 def test_similarity_exactly_at_threshold_is_changed() -> None:
     old = clause("Срок аренды.")
     new = clause("Срок оплаты.")
 
-    assert align_clauses([old], [new]) == [ChangedClause(old=old, new=new)]
+    assert align_clauses([old], [new]) == [changed(old, new)]
 
 
 def test_similarity_below_threshold_is_removed_and_added() -> None:
@@ -119,11 +133,43 @@ def test_similarity_below_threshold_is_removed_and_added() -> None:
     assert align_clauses([old], [new]) == [RemovedClause(old=old), AddedClause(new=new)]
 
 
-def test_difference_only_in_case_is_changed() -> None:
+def test_difference_only_in_case_is_reformatted() -> None:
     old = clause("Арендатор вносит плату.")
     new = clause("АРЕНДАТОР вносит плату.")
 
-    assert align_clauses([old], [new]) == [ChangedClause(old=old, new=new)]
+    assert align_clauses([old], [new]) == [reformatted(old, new)]
+
+
+def test_difference_only_in_spacing_is_reformatted_despite_low_similarity() -> None:
+    old = clause("Залог 10 000")
+    new = clause("Залог 10000")
+
+    assert word_similarity(clause_words(old.text), clause_words(new.text)) < SIMILARITY_THRESHOLD
+    assert align_clauses([old], [new]) == [reformatted(old, new)]
+
+
+def test_exact_match_goes_before_match_after_normalization() -> None:
+    upper = clause("ПОДПИСИ СТОРОН:")
+    lower = clause("Подписи сторон:")
+
+    alignment = align_clauses([lower, upper], [upper, lower])
+
+    assert alignment == [
+        UnchangedClause(old=upper, new=upper),
+        UnchangedClause(old=lower, new=lower),
+    ]
+
+
+def test_repeats_differing_in_case_are_paired_in_order_after_exact_ones() -> None:
+    old_lower = clause("Подписи сторон:")
+    new_upper = clause("ПОДПИСИ СТОРОН:")
+
+    alignment = align_clauses([old_lower, old_lower], [old_lower, new_upper])
+
+    assert alignment == [
+        UnchangedClause(old=old_lower, new=old_lower),
+        reformatted(old_lower, new_upper),
+    ]
 
 
 def test_clauses_without_words_are_not_similar() -> None:
@@ -148,7 +194,7 @@ def test_greedy_choice_takes_most_similar_pair_first() -> None:
 
     alignment = align_clauses([old], [short_new, close_new])
 
-    assert alignment == [AddedClause(new=short_new), ChangedClause(old=old, new=close_new)]
+    assert alignment == [AddedClause(new=short_new), changed(old, close_new)]
 
 
 def test_tie_goes_to_earlier_new_clause() -> None:
@@ -158,7 +204,7 @@ def test_tie_goes_to_earlier_new_clause() -> None:
 
     alignment = align_clauses([old], [first_new, second_new])
 
-    assert alignment == [ChangedClause(old=old, new=first_new), AddedClause(new=second_new)]
+    assert alignment == [changed(old, first_new), AddedClause(new=second_new)]
 
 
 def test_tie_goes_to_earlier_old_clause() -> None:
@@ -168,7 +214,7 @@ def test_tie_goes_to_earlier_old_clause() -> None:
 
     alignment = align_clauses([first_old, second_old], [new])
 
-    assert alignment == [ChangedClause(old=first_old, new=new), RemovedClause(old=second_old)]
+    assert alignment == [changed(first_old, new), RemovedClause(old=second_old)]
 
 
 def test_repeated_clauses_are_paired_in_order() -> None:
@@ -274,8 +320,9 @@ def test_summary_counts_every_status() -> None:
         UnchangedClause(old=clause("А"), new=clause("А")),
         UnchangedClause(old=clause("Б"), new=clause("Б")),
         UnchangedClause(old=clause("В"), new=clause("В")),
-        ChangedClause(old=clause("Г"), new=clause("Г!")),
-        ChangedClause(old=clause("Д"), new=clause("Д!")),
+        changed(clause("Г"), clause("Г!")),
+        changed(clause("Д"), clause("Д!")),
+        reformatted(clause("Ё"), clause("Ё ")),
         AddedClause(new=clause("Е")),
         RemovedClause(old=clause("Ж")),
         RemovedClause(old=clause("З")),
@@ -284,8 +331,29 @@ def test_summary_counts_every_status() -> None:
     ]
 
     assert summarize_alignment(alignment) == AlignmentSummary(
-        changed=2, added=1, removed=4, unchanged=3
+        changed=2, reformatted=1, added=1, removed=4, unchanged=3
     )
+
+
+def test_compare_equal_texts_is_unchanged_whatever_the_numbers() -> None:
+    old = clause("Текст", "3.1")
+    new = clause("Текст", "4.1")
+
+    assert compare_clauses(old, new) == UnchangedClause(old=old, new=new)
+
+
+def test_compare_texts_differing_only_in_formatting_is_reformatted() -> None:
+    old = clause("ООО «Ромашка» - арендатор")
+    new = clause('ООО "ромашка" — арендатор')
+
+    assert compare_clauses(old, new) == reformatted(old, new)
+
+
+def test_compare_texts_with_different_words_is_changed() -> None:
+    old = clause("Срок аренды один год.")
+    new = clause("Срок аренды два года.")
+
+    assert compare_clauses(old, new) == changed(old, new)
 
 
 def test_large_versions_without_common_words_are_all_removed_then_all_added() -> None:

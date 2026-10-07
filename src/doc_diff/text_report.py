@@ -5,6 +5,8 @@ from doc_diff.alignment import (
     AddedClause,
     AlignedClause,
     ChangedClause,
+    MovedClause,
+    PairedClause,
     ReformattedClause,
     RemovedClause,
     UnchangedClause,
@@ -18,7 +20,7 @@ BLOCK_SEPARATOR = "\n\n"
 
 SUMMARY_TEMPLATE = (
     "Изменено: {changed}, только форматирование: {reformatted}, добавлено: {added}, "
-    "удалено: {removed}, без изменений: {unchanged}."
+    "удалено: {removed}, перенесено: {moved}, без изменений: {unchanged}."
 )
 
 UNCHANGED_LABEL = "Без изменений"
@@ -26,6 +28,11 @@ REFORMATTED_LABEL = "Изменено только форматирование"
 CHANGED_LABEL = "Изменён"
 ADDED_LABEL = "Добавлен"
 REMOVED_LABEL = "Удалён"
+MOVED_LABEL = "Перенесён"
+MOVED_FROM_PREFIX = " из "
+MOVED_TO_PREFIX = " в "
+MOVED_AND_CHANGED_SUFFIX = " и изменён"
+MOVED_AND_REFORMATTED_SUFFIX = ", изменено только форматирование"
 
 OLD_TEXT_LABEL = "  Было: "
 NEW_TEXT_LABEL = "  Стало: "
@@ -54,6 +61,7 @@ def format_text_report(alignment: Sequence[AlignedClause]) -> str:
         reformatted=summary.reformatted,
         added=summary.added,
         removed=summary.removed,
+        moved=summary.moved,
         unchanged=summary.unchanged,
     )
     entries = [format_entry(aligned) for aligned in alignment]
@@ -69,6 +77,8 @@ def format_entry(aligned: AlignedClause) -> str:
             return format_reformatted(old, new, word_diff)
         case ChangedClause(old=old, new=new, word_diff=word_diff):
             return format_changed(old, new, word_diff)
+        case MovedClause(comparison=comparison):
+            return format_moved(comparison)
         case AddedClause(new=new):
             number = format_number(None, new.number)
             return f"{ADDED_LABEL}{number}: {new.text}"
@@ -81,26 +91,65 @@ def format_entry(aligned: AlignedClause) -> str:
 
 def format_reformatted(old: Clause, new: Clause, word_diff: WordDiff) -> str:
     number = format_number(old.number, new.number)
-    lines = [
-        f"{REFORMATTED_LABEL}{number}:",
-        f"{OLD_TEXT_LABEL}{old.text}",
-        f"{NEW_TEXT_LABEL}{new.text}",
-        *format_formatting_lines(word_diff),
-    ]
+    lines = [f"{REFORMATTED_LABEL}{number}:", *reformatted_body_lines(old, new, word_diff)]
     return "\n".join(lines)
 
 
 def format_changed(old: Clause, new: Clause, word_diff: WordDiff) -> str:
     number = format_number(old.number, new.number)
-    lines = [
-        f"{CHANGED_LABEL}{number}:",
+    lines = [f"{CHANGED_LABEL}{number}:", *changed_body_lines(old, new, word_diff)]
+    return "\n".join(lines)
+
+
+def format_moved(comparison: PairedClause) -> str:
+    heading = format_move_heading(comparison.old.number, comparison.new.number)
+    match comparison:
+        case UnchangedClause(new=new):
+            return f"{heading}: {new.text}"
+        case ChangedClause(old=old, new=new, word_diff=word_diff):
+            lines = [
+                f"{heading}{MOVED_AND_CHANGED_SUFFIX}:",
+                *changed_body_lines(old, new, word_diff),
+            ]
+            return "\n".join(lines)
+        case ReformattedClause(old=old, new=new, word_diff=word_diff):
+            lines = [
+                f"{heading}{MOVED_AND_REFORMATTED_SUFFIX}:",
+                *reformatted_body_lines(old, new, word_diff),
+            ]
+            return "\n".join(lines)
+        case _:
+            assert_never(comparison)
+
+
+def format_move_heading(old_number: str | None, new_number: str | None) -> str:
+    """Откуда — когда у пункта был номер; куда — когда номер есть и отличается от старого."""
+    heading = MOVED_LABEL
+    if old_number is not None:
+        heading += f"{MOVED_FROM_PREFIX}{old_number}"
+
+    is_new_number_shown = new_number is not None and new_number != old_number
+    if is_new_number_shown:
+        heading += f"{MOVED_TO_PREFIX}{new_number}"
+    return heading
+
+
+def reformatted_body_lines(old: Clause, new: Clause, word_diff: WordDiff) -> list[str]:
+    return [
+        f"{OLD_TEXT_LABEL}{old.text}",
+        f"{NEW_TEXT_LABEL}{new.text}",
+        *format_formatting_lines(word_diff),
+    ]
+
+
+def changed_body_lines(old: Clause, new: Clause, word_diff: WordDiff) -> list[str]:
+    return [
         f"{OLD_TEXT_LABEL}{old.text}",
         f"{NEW_TEXT_LABEL}{new.text}",
         CONTENT_EDITS_LABEL,
         *format_content_edit_lines(word_diff),
         *format_formatting_lines(word_diff),
     ]
-    return "\n".join(lines)
 
 
 def format_content_edit_lines(word_diff: WordDiff) -> list[str]:

@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROGRAM_NAME,
         description=(
             "Сравнивает две версии договора (PDF или DOCX) "
-            "и показывает изменённые, добавленные и удалённые пункты."
+            "и показывает изменённые, добавленные, удалённые и перенесённые пункты."
         ),
         formatter_class=RussianHelpFormatter,
         add_help=False,

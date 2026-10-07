@@ -1,4 +1,5 @@
 import re
+from bisect import bisect_left
 from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -50,7 +51,16 @@ class RemovedClause:
 
 
 PairedClause = UnchangedClause | ReformattedClause | ChangedClause
-AlignedClause = PairedClause | AddedClause | RemovedClause
+
+
+@dataclass(frozen=True)
+class MovedClause:
+    """Пункт переставлен относительно остальных; `comparison` — сравнение его текстов."""
+
+    comparison: PairedClause
+
+
+AlignedClause = PairedClause | MovedClause | AddedClause | RemovedClause
 
 # Пары пунктов: индекс в старой версии -> индекс в новой.
 ClausePairs = dict[int, int]
@@ -62,6 +72,7 @@ class AlignmentSummary:
     reformatted: int
     added: int
     removed: int
+    moved: int
     unchanged: int
 
 
@@ -165,13 +176,55 @@ def compare_clauses(old: Clause, new: Clause) -> PairedClause:
     return ReformattedClause(old=old, new=new, word_diff=word_diff)
 
 
+def find_stationary_old_indexes(pairs: ClausePairs) -> frozenset[int]:
+    """Старые индексы пар, которые не переставлены: наибольшая возрастающая подпоследовательность
+    старых индексов, если выписать их в порядке новой версии.
+
+    Самых длинных может быть несколько — берётся лексикографически наименьшая по старым
+    индексам: на месте остаётся как можно больше пунктов, а при равенстве — те, что раньше
+    в старой версии."""
+    old_indexes_in_new_order = sorted(pairs, key=pairs.__getitem__)
+    lengths = count_increasing_lengths_from(old_indexes_in_new_order)
+
+    # Среди пунктов с одинаковой длиной продолжения более поздний всегда имеет меньший старый
+    # индекс, поэтому наименьший допустимый в группе — и есть следующий пункт цепочки.
+    old_indexes_by_length: defaultdict[int, list[int]] = defaultdict(list)
+    for old_index, length in zip(old_indexes_in_new_order, lengths, strict=True):
+        old_indexes_by_length[length].append(old_index)
+
+    stationary: set[int] = set()
+    previous_old_index = -1
+    for length in range(max(lengths, default=0), 0, -1):
+        allowed = [index for index in old_indexes_by_length[length] if index > previous_old_index]
+        previous_old_index = min(allowed)
+        stationary.add(previous_old_index)
+    return frozenset(stationary)
+
+
+def count_increasing_lengths_from(values: Sequence[int]) -> list[int]:
+    """Для каждой позиции — длина самой длинной строго возрастающей подпоследовательности,
+    которая с неё начинается. Идём справа налево, храня наименьшие «хвосты» цепочек."""
+    lengths: list[int] = []
+    negated_tails: list[int] = []
+    for value in reversed(values):
+        length_before = bisect_left(negated_tails, -value)
+        if length_before == len(negated_tails):
+            negated_tails.append(-value)
+        else:
+            negated_tails[length_before] = -value
+        lengths.append(length_before + 1)
+    lengths.reverse()
+    return lengths
+
+
 def arrange_in_document_order(
     old: Sequence[Clause], new: Sequence[Clause], pairs: ClausePairs
 ) -> list[AlignedClause]:
     """Пункты новой версии идут в её порядке; удалённый — после ближайшего предшествующего
-    ему в старой версии пункта с парой, а если такого нет, то в начале."""
+    ему в старой версии пункта, стоящего на месте, а если такого нет, то в начале."""
     old_index_by_new_index = {new_index: old_index for old_index, new_index in pairs.items()}
-    removed_by_anchor = group_removed_by_anchor(old, set(pairs))
+    stationary_old_indexes = find_stationary_old_indexes(pairs)
+    removed_by_anchor = group_removed_by_anchor(old, pairs, stationary_old_indexes)
 
     aligned: list[AlignedClause] = list(removed_by_anchor.get(None, []))
     for new_index, new_clause in enumerate(new):
@@ -180,22 +233,26 @@ def arrange_in_document_order(
             aligned.append(AddedClause(new=new_clause))
             continue
 
-        aligned.append(compare_clauses(old[old_index], new_clause))
+        comparison = compare_clauses(old[old_index], new_clause)
+        is_in_place = old_index in stationary_old_indexes
+        aligned.append(comparison if is_in_place else MovedClause(comparison=comparison))
         aligned.extend(removed_by_anchor.get(old_index, []))
     return aligned
 
 
 def group_removed_by_anchor(
-    old: Sequence[Clause], paired_old_indexes: set[int]
+    old: Sequence[Clause], pairs: ClausePairs, stationary_old_indexes: frozenset[int]
 ) -> dict[int | None, list[RemovedClause]]:
-    """Опора удалённого пункта — индекс ближайшего предшествующего пункта старой версии с парой."""
+    """Опора удалённого пункта — индекс ближайшего предшествующего пункта старой версии,
+    стоящего на месте; перенесённые пункты опорой не служат."""
     removed_by_anchor: dict[int | None, list[RemovedClause]] = defaultdict(list)
     anchor: int | None = None
     for old_index, clause in enumerate(old):
-        if old_index in paired_old_indexes:
+        if old_index in stationary_old_indexes:
             anchor = old_index
             continue
-        removed_by_anchor[anchor].append(RemovedClause(old=clause))
+        if old_index not in pairs:
+            removed_by_anchor[anchor].append(RemovedClause(old=clause))
     return removed_by_anchor
 
 
@@ -204,6 +261,7 @@ def summarize_alignment(alignment: Sequence[AlignedClause]) -> AlignmentSummary:
     reformatted = 0
     added = 0
     removed = 0
+    moved = 0
     unchanged = 0
     for aligned in alignment:
         match aligned:
@@ -217,6 +275,8 @@ def summarize_alignment(alignment: Sequence[AlignedClause]) -> AlignmentSummary:
                 added += 1
             case RemovedClause():
                 removed += 1
+            case MovedClause():
+                moved += 1
             case _:
                 assert_never(aligned)
     return AlignmentSummary(
@@ -224,5 +284,6 @@ def summarize_alignment(alignment: Sequence[AlignedClause]) -> AlignmentSummary:
         reformatted=reformatted,
         added=added,
         removed=removed,
+        moved=moved,
         unchanged=unchanged,
     )

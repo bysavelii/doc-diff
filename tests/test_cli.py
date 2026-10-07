@@ -24,8 +24,13 @@ INSTALLED_COMMAND = Path(sys.executable).with_name("doc-diff")
 def make_old_pdf(directory: Path) -> Path:
     path = directory / "old.pdf"
     bodies = [
-        ["1.1. Арендатор вносит плату", "ежемесячно."],
-        ["1.2. Срок — один год."],
+        [
+            "Договор аренды № 7",
+            "1.1. Арендатор вносит плату",
+            "ежемесячно.",
+            "1.2. Срок аренды составляет один год.",
+        ],
+        ["1.3. Арендатор страхует помещение.", "2.1. Споры решаются в суде."],
     ]
     pages = [
         PdfPage(body_lines=body, header="ООО «Ромашка»", footer=f"Страница {number} из 2")
@@ -39,7 +44,13 @@ def make_new_docx(directory: Path) -> Path:
     path = directory / "new.docx"
     build_docx(
         path,
-        ["1.1. Арендатор вносит плату ежемесячно.", "1.2. Срок — два года."],
+        [
+            "Договор аренды № 7",
+            "1.1. Арендатор вносит плату ежемесячно.",
+            "1.2. Срок аренды составляет два года.",
+            "1.3. Споры решаются в суде.",
+            "1.4. Арендатор не вправе сдавать помещение в субаренду.",
+        ],
         header="ООО «Ромашка»",
     )
     return path
@@ -57,7 +68,7 @@ def run_installed_command(*paths: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
-def test_prints_both_versions_in_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_prints_comparison_of_versions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     old_path = make_old_pdf(tmp_path)
     new_path = make_new_docx(tmp_path)
 
@@ -67,13 +78,30 @@ def test_prints_both_versions_in_order(tmp_path: Path, capsys: pytest.CaptureFix
     assert exit_code == EXIT_OK
     assert captured.err == ""
     assert captured.out == (
-        f"=== Старая версия: {old_path} ===\n\n"
-        "1.1. Арендатор вносит плату ежемесячно.\n\n"
-        "1.2. Срок — один год.\n\n"
-        f"=== Новая версия: {new_path} ===\n\n"
-        "1.1. Арендатор вносит плату ежемесячно.\n\n"
-        "1.2. Срок — два года.\n"
+        "Изменено: 1, добавлено: 1, удалено: 1, без изменений: 3.\n\n"
+        "Без изменений: Договор аренды № 7\n\n"
+        "Без изменений, пункт 1.1: Арендатор вносит плату ежемесячно.\n\n"
+        "Изменён, пункт 1.2:\n"
+        "  Было: Срок аренды составляет один год.\n"
+        "  Стало: Срок аренды составляет два года.\n\n"
+        "Удалён, пункт 1.3: Арендатор страхует помещение.\n\n"
+        "Без изменений, пункт 2.1 \N{RIGHTWARDS ARROW} 1.3: Споры решаются в суде.\n\n"
+        "Добавлен, пункт 1.4: Арендатор не вправе сдавать помещение в субаренду.\n"
     )
+
+
+def test_identical_versions_have_no_differences(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "same.docx"
+    build_docx(path, ["Договор аренды № 7", "1.1. Арендатор вносит плату."])
+
+    exit_code = main([str(path), str(path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_OK
+    assert captured.err == ""
+    assert captured.out.startswith("Изменено: 0, добавлено: 0, удалено: 0, без изменений: 2.\n")
 
 
 def test_missing_first_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

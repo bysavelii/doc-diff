@@ -352,3 +352,144 @@ def test_help_is_in_russian(capsys: pytest.CaptureFixture[str]) -> None:
     assert "show this help" not in captured.out
     assert "positional" not in captured.out
     assert "options" not in captured.out
+
+
+def test_help_shows_output_option_in_russian(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+
+    output = capsys.readouterr().out
+    unwrapped_output = " ".join(output.split())
+    assert "--output" in output
+    assert "ФАЙЛ" in output
+    assert (
+        "сохранить отчёт в HTML-файл (без параметра отчёт печатается текстом)" in unwrapped_output
+    )
+
+
+def test_output_option_saves_html_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report_path = tmp_path / "report.html"
+
+    exit_code = main(
+        [str(make_old_pdf(tmp_path)), str(make_new_docx(tmp_path)), "-o", str(report_path)]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_OK
+    assert captured.out == f"HTML-отчёт сохранён: {report_path}\n"
+    assert captured.err == ""
+    report = report_path.read_bytes().decode("utf-8")
+    assert report.startswith("<!DOCTYPE html>")
+    assert "<del>один год</del>" in report
+    assert "<ins>два года</ins>" in report
+    assert "Было: old.pdf" in report
+    assert str(tmp_path) not in report
+
+
+def test_output_option_has_long_form(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    report_path = tmp_path / "report.html"
+
+    exit_code = main(
+        [str(make_old_pdf(tmp_path)), str(make_new_docx(tmp_path)), "--output", str(report_path)]
+    )
+
+    assert exit_code == EXIT_OK
+    assert report_path.exists()
+    assert capsys.readouterr().out == f"HTML-отчёт сохранён: {report_path}\n"
+
+
+def test_unreadable_document_with_output_creates_no_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old_path = tmp_path / "absent.pdf"
+    report_path = tmp_path / "report.html"
+
+    exit_code = main([str(old_path), str(make_new_docx(tmp_path)), "-o", str(report_path)])
+
+    assert exit_code == EXIT_DOCUMENT_ERROR
+    assert_single_error(capsys, f"Файл не найден: {old_path}")
+    assert not report_path.exists()
+
+
+def test_report_in_missing_directory_gives_write_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report_path = tmp_path / "absent" / "report.html"
+
+    exit_code = main(
+        [str(make_old_pdf(tmp_path)), str(make_new_docx(tmp_path)), "-o", str(report_path)]
+    )
+
+    assert exit_code == EXIT_DOCUMENT_ERROR
+    assert_single_error(
+        capsys,
+        f"не удалось сохранить отчёт в {report_path} — "
+        "проверьте, что папка существует и в неё можно записывать.",
+    )
+
+
+def test_report_path_that_is_a_directory_gives_write_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(
+        [str(make_old_pdf(tmp_path)), str(make_new_docx(tmp_path)), "-o", str(tmp_path)]
+    )
+
+    assert exit_code == EXIT_DOCUMENT_ERROR
+    assert_single_error(
+        capsys,
+        f"не удалось сохранить отчёт в {tmp_path} — "
+        "проверьте, что папка существует и в неё можно записывать.",
+    )
+
+
+def test_report_path_equal_to_old_version_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old_path = make_old_pdf(tmp_path)
+    original_bytes = old_path.read_bytes()
+
+    exit_code = main([str(old_path), str(make_new_docx(tmp_path)), "-o", str(old_path)])
+
+    assert exit_code == EXIT_DOCUMENT_ERROR
+    assert_single_error(
+        capsys,
+        f"файл отчёта {old_path} — это одна из сравниваемых версий, укажите другой файл.",
+    )
+    assert old_path.read_bytes() == original_bytes
+
+
+def test_report_path_equal_to_new_version_through_another_spelling_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    new_path = make_new_docx(tmp_path)
+    original_bytes = new_path.read_bytes()
+    (tmp_path / "nested").mkdir()
+    same_file = tmp_path / "nested" / ".." / "new.docx"
+
+    exit_code = main([str(make_old_pdf(tmp_path)), str(new_path), "-o", str(same_file)])
+
+    assert exit_code == EXIT_DOCUMENT_ERROR
+    assert_single_error(
+        capsys,
+        f"файл отчёта {same_file} — это одна из сравниваемых версий, укажите другой файл.",
+    )
+    assert new_path.read_bytes() == original_bytes
+
+
+def test_identical_versions_with_output_give_report_with_zero_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "same.docx"
+    report_path = tmp_path / "report.html"
+    build_docx(path, ["Договор аренды № 7", "1.1. Арендатор вносит плату."])
+
+    exit_code = main([str(path), str(path), "-o", str(report_path)])
+
+    assert exit_code == EXIT_OK
+    assert capsys.readouterr().out == f"HTML-отчёт сохранён: {report_path}\n"
+    report = report_path.read_text(encoding="utf-8")
+    assert "<li>Изменено: <strong>0</strong></li>" in report
+    assert "<li>Без изменений: <strong>2</strong></li>" in report

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "2026-10-07-f67d949c",
+  "timestamp": "2026-10-07T22:16:48.506Z",
+  "projectId": "doc-diff",
+  "source": {
+    "type": "manual"
+  },
+  "type": "decision",
+  "data": {
+    "title": "Пробельные символы в тексте из PDF и DOCX схлопываются одной функцией collapse_whitespace",
+    "description": "Основной сценарий — сравнить PDF и DOCX одного договора; иначе выравнивание по ширине в PDF и двойные пробелы в DOCX дают ложные правки"
+  }
+}
